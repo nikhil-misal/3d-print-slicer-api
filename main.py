@@ -1,28 +1,34 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException, Query
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from stl import mesh
-import numpy as np
 import tempfile
 import os
 import math
 
+
 app = FastAPI(
-    title="SabkiDesigns 3D Print Analysis API",
+    title="3D Print STL Analyzer API",
     version="2.0.0"
 )
+
+
+# ==============================
+# CORS
+# ==============================
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=False,
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# ============================================================
-# STANDARD MATERIAL DENSITIES
-# Unit: grams per cubic centimeter (g/cm³)
-# ============================================================
+
+# ==============================
+# MATERIAL DENSITIES
+# Unit: g/cm³
+# ==============================
 
 MATERIAL_DENSITIES = {
     "PLA": 1.24,
@@ -33,237 +39,74 @@ MATERIAL_DENSITIES = {
     "NYLON": 1.15,
 }
 
-# ============================================================
-# INTERNAL UNIT STANDARD
-# ALL PROCESSING AFTER DETECTION IS DONE IN MILLIMETERS
-# ============================================================
 
-UNIT_CANDIDATES = {
-    "mm": 1.0,
-    "cm": 10.0,
-    "inch": 25.4,
-    "meter": 1000.0,
-}
-
-# Reasonable printable size range for automatic detection.
-# These values are used only to score possible STL scales.
-MIN_REASONABLE_SIZE_MM = 0.5
-MAX_REASONABLE_SIZE_MM = 1000.0
-
+# ==============================
+# HOME
+# ==============================
 
 @app.get("/")
 def home():
     return {
         "success": True,
         "status": "online",
-        "message": "3D Print Analysis API is running",
-        "internal_standard_unit": "mm"
+        "message": "3D Print STL Analyzer API is running",
+        "standard_unit": "mm"
     }
 
 
-# ============================================================
-# HELPER: VALIDATE MODEL DIMENSIONS
-# ============================================================
+# ==============================
+# HEALTH CHECK
+# ==============================
 
-def get_model_dimensions(vectors):
-    """
-    Reads the raw STL coordinates and returns
-    X, Y and Z dimensions.
-    """
-
-    min_values = vectors.min(axis=(0, 1))
-    max_values = vectors.max(axis=(0, 1))
-
-    dimensions = max_values - min_values
-
-    x = float(dimensions[0])
-    y = float(dimensions[1])
-    z = float(dimensions[2])
-
-    return x, y, z
+@app.get("/health")
+def health():
+    return {
+        "success": True,
+        "status": "healthy",
+        "unit": "mm"
+    }
 
 
-# ============================================================
-# AUTOMATIC UNIT / SCALE DETECTION
-# ============================================================
+# ==============================
+# HELPER: VALIDATE NUMBER
+# ==============================
 
-def score_scale(dimensions_mm):
-    """
-    Gives a score to a possible normalized model size.
+def safe_float(value, default=0.0):
+    try:
+        number = float(value)
 
-    Lower score = more reasonable scale.
+        if not math.isfinite(number):
+            return default
 
-    This does NOT magically read STL units.
-    It compares possible standard scales and chooses
-    the most reasonable printable interpretation.
-    """
+        return number
 
-    dims = [abs(float(d)) for d in dimensions_mm]
-
-    non_zero_dims = [
-        d for d in dims
-        if d > 0.000001
-    ]
-
-    if not non_zero_dims:
-        return float("inf")
-
-    max_dim = max(non_zero_dims)
-    min_dim = min(non_zero_dims)
-
-    score = 0.0
-
-    # Reject extremely small models
-    if max_dim < MIN_REASONABLE_SIZE_MM:
-        score += 100000.0 + (
-            MIN_REASONABLE_SIZE_MM - max_dim
-        ) * 1000
-
-    # Reject extremely large models
-    if max_dim > MAX_REASONABLE_SIZE_MM:
-        score += 100000.0 + (
-            max_dim - MAX_REASONABLE_SIZE_MM
-        )
-
-    # Prefer common 3D printable sizes
-    # Around 10 mm to 300 mm gets a better score
-    if 10 <= max_dim <= 300:
-        score -= 100
-
-    # Small but still printable
-    elif 1 <= max_dim < 10:
-        score += 20
-
-    # Larger printable model
-    elif 300 < max_dim <= 500:
-        score += 30
-
-    # Penalize absurdly tiny geometry
-    if min_dim < 0.05:
-        score += 200
-
-    # Mild preference for common desktop 3D print sizes
-    target_size = 100.0
-
-    if max_dim > 0:
-        score += abs(
-            math.log10(max_dim / target_size)
-        ) * 10
-
-    return score
+    except Exception:
+        return default
 
 
-def detect_best_unit(raw_dimensions):
-    """
-    Tests common STL scale interpretations.
-
-    Returns the best scale and normalized dimensions in mm.
-    """
-
-    candidates = []
-
-    for unit_name, scale_factor in UNIT_CANDIDATES.items():
-
-        normalized_dimensions = [
-            float(d) * scale_factor
-            for d in raw_dimensions
-        ]
-
-        score = score_scale(
-            normalized_dimensions
-        )
-
-        candidates.append({
-            "detected_unit": unit_name,
-            "scale_factor_to_mm": scale_factor,
-            "dimensions_mm": normalized_dimensions,
-            "score": score
-        })
-
-    candidates.sort(
-        key=lambda item: item["score"]
-    )
-
-    return candidates[0], candidates
-
-
-# ============================================================
-# WEIGHT ESTIMATION
-# ============================================================
-
-def calculate_print_weight(
-    solid_volume_cm3,
-    density,
-    infill_percent
-):
-    """
-    Estimates actual FDM printed weight.
-
-    This is an estimate.
-    Exact slicer weight requires actual slicing settings:
-    wall count, layer height, top/bottom layers,
-    infill pattern, supports, etc.
-    """
-
-    solid_weight = (
-        solid_volume_cm3 * density
-    )
-
-    # Approximate shell contribution
-    shell_factor = 0.28
-
-    # Infill material contribution
-    infill_factor = (
-        infill_percent / 100.0
-    ) * 0.72
-
-    material_usage_factor = (
-        shell_factor + infill_factor
-    )
-
-    # Never exceed 100% solid material
-    material_usage_factor = min(
-        material_usage_factor,
-        1.0
-    )
-
-    # Minimum protection
-    material_usage_factor = max(
-        material_usage_factor,
-        0.01
-    )
-
-    estimated_weight = (
-        solid_weight *
-        material_usage_factor
-    )
-
-    return (
-        solid_weight,
-        estimated_weight,
-        material_usage_factor
-    )
-
-
-# ============================================================
-# MAIN ANALYSIS API
-# ============================================================
+# ==============================
+# MAIN STL ANALYSIS API
+# ==============================
 
 @app.post("/analyze")
 async def analyze_stl(
+
     file: UploadFile = File(...),
-    material: str = Query("PLA"),
-    infill: float = Query(20)
+
+    material: str = Form("PLA"),
+
+    infill: float = Form(20)
+
 ):
 
-    # --------------------------------------------------------
-    # FILE VALIDATION
-    # --------------------------------------------------------
+    # ==============================
+    # VALIDATE FILE
+    # ==============================
 
     if not file.filename:
         raise HTTPException(
             status_code=400,
-            detail="No file name received"
+            detail="No file uploaded"
         )
 
     if not file.filename.lower().endswith(".stl"):
@@ -272,43 +115,47 @@ async def analyze_stl(
             detail="Only STL files are supported"
         )
 
-    # --------------------------------------------------------
-    # MATERIAL VALIDATION
-    # --------------------------------------------------------
 
-    material_key = (
-        material.strip().upper()
-    )
+    # ==============================
+    # VALIDATE MATERIAL
+    # ==============================
+
+    material_key = material.strip().upper()
 
     if material_key not in MATERIAL_DENSITIES:
+
         raise HTTPException(
             status_code=400,
-            detail=(
-                "Unsupported material. "
-                f"Use one of: "
-                f"{list(MATERIAL_DENSITIES.keys())}"
-            )
+            detail={
+                "error": "Unsupported material",
+                "supported_materials":
+                    list(MATERIAL_DENSITIES.keys())
+            }
         )
 
-    # --------------------------------------------------------
-    # INFILL VALIDATION
-    # --------------------------------------------------------
+
+    # ==============================
+    # VALIDATE INFILL
+    # ==============================
+
+    infill = safe_float(infill, 20)
 
     if infill < 0 or infill > 100:
+
         raise HTTPException(
             status_code=400,
-            detail=(
-                "Infill must be between 0 and 100"
-            )
+            detail="Infill must be between 0 and 100"
         )
+
 
     temp_path = None
 
+
     try:
 
-        # ----------------------------------------------------
-        # SAVE UPLOADED FILE TEMPORARILY
-        # ----------------------------------------------------
+        # ==============================
+        # SAVE TEMPORARY FILE
+        # ==============================
 
         content = await file.read()
 
@@ -318,124 +165,181 @@ async def analyze_stl(
                 detail="Uploaded STL file is empty"
             )
 
+
         with tempfile.NamedTemporaryFile(
             delete=False,
             suffix=".stl"
         ) as temp_file:
 
             temp_path = temp_file.name
+
             temp_file.write(content)
 
-        # ----------------------------------------------------
+
+        # ==============================
         # LOAD STL
-        # numpy-stl supports common binary and ASCII STL files
-        # ----------------------------------------------------
+        # ==============================
 
         model = mesh.Mesh.from_file(
             temp_path
         )
 
-        if (
-            model is None or
-            model.vectors is None or
-            len(model.vectors) == 0
-        ):
-            raise ValueError(
-                "STL contains no valid triangles"
+
+        # ==============================
+        # CHECK MODEL
+        # ==============================
+
+        if model.vectors is None:
+
+            raise HTTPException(
+                status_code=400,
+                detail="Invalid STL geometry"
             )
 
-        # ----------------------------------------------------
+
+        if len(model.vectors) == 0:
+
+            raise HTTPException(
+                status_code=400,
+                detail="STL model contains no triangles"
+            )
+
+
+        # ==========================================
+        # IMPORTANT:
+        # STANDARD UNIT = MILLIMETERS
+        #
+        # STL format usually does not store units.
+        # For 3D printing, raw STL coordinates are
+        # treated as millimeters.
+        # ==========================================
+
+        scale_factor_to_mm = 1.0
+
+        raw_unit_assumption = "mm"
+
+        unit_used = "mm"
+
+
+        # ==============================
         # RAW DIMENSIONS
-        # ----------------------------------------------------
+        # ==============================
 
-        raw_x, raw_y, raw_z = (
-            get_model_dimensions(
-                model.vectors
+        min_values = model.vectors.min(
+            axis=(0, 1)
+        )
+
+        max_values = model.vectors.max(
+            axis=(0, 1)
+        )
+
+
+        raw_dimensions = (
+            max_values - min_values
+        )
+
+
+        raw_x = safe_float(
+            raw_dimensions[0]
+        )
+
+        raw_y = safe_float(
+            raw_dimensions[1]
+        )
+
+        raw_z = safe_float(
+            raw_dimensions[2]
+        )
+
+
+        # ==============================
+        # STANDARDIZED DIMENSIONS
+        # EVERYTHING IN MM
+        # ==============================
+
+        x_mm = (
+            raw_x *
+            scale_factor_to_mm
+        )
+
+        y_mm = (
+            raw_y *
+            scale_factor_to_mm
+        )
+
+        z_mm = (
+            raw_z *
+            scale_factor_to_mm
+        )
+
+
+        # ==============================
+        # VALIDATE DIMENSIONS
+        # ==============================
+
+        if (
+            x_mm <= 0 and
+            y_mm <= 0 and
+            z_mm <= 0
+        ):
+
+            raise HTTPException(
+                status_code=400,
+                detail="Invalid STL dimensions"
             )
-        )
 
-        raw_dimensions = [
-            raw_x,
-            raw_y,
-            raw_z
-        ]
 
-        if max(raw_dimensions) <= 0:
-            raise ValueError(
-                "Model dimensions are zero"
-            )
-
-        # ----------------------------------------------------
-        # AUTOMATIC UNIT DETECTION
-        # ----------------------------------------------------
-
-        best_scale, all_candidates = (
-            detect_best_unit(
-                raw_dimensions
-            )
-        )
-
-        scale_factor = (
-            best_scale[
-                "scale_factor_to_mm"
-            ]
-        )
-
-        normalized_x = (
-            raw_x * scale_factor
-        )
-
-        normalized_y = (
-            raw_y * scale_factor
-        )
-
-        normalized_z = (
-            raw_z * scale_factor
-        )
-
-        # ----------------------------------------------------
-        # VOLUME
+        # ==============================
+        # CALCULATE VOLUME
         #
-        # numpy-stl returns volume in cubic coordinate units.
+        # numpy-stl returns volume based
+        # on the STL coordinates.
         #
-        # If coordinates are normalized by:
-        # scale_factor
-        #
-        # volume must be multiplied by:
-        # scale_factor³
-        # ----------------------------------------------------
+        # Since we standardize STL input
+        # as mm, this is mm³.
+        # ==============================
 
-        raw_volume, _, _ = (
+        volume_raw, _, _ = (
             model.get_mass_properties()
         )
 
-        raw_volume = abs(
-            float(raw_volume)
+
+        volume_raw = abs(
+            safe_float(volume_raw)
         )
 
-        if (
-            not math.isfinite(
-                raw_volume
-            ) or
-            raw_volume <= 0
-        ):
-            raise ValueError(
-                "Could not calculate a valid closed-model volume. "
-                "The STL may be open, broken or non-manifold."
-            )
 
+        # Convert to standardized mm³
         volume_mm3 = (
-            raw_volume *
-            (scale_factor ** 3)
+            volume_raw *
+            (scale_factor_to_mm ** 3)
         )
 
+
+        # mm³ to cm³
         volume_cm3 = (
             volume_mm3 / 1000.0
         )
 
-        # ----------------------------------------------------
-        # MATERIAL WEIGHT
-        # ----------------------------------------------------
+
+        # ==============================
+        # FALLBACK VOLUME CHECK
+        # ==============================
+
+        if volume_mm3 <= 0:
+
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Volume is zero or could not be calculated. "
+                    "The STL may be an open, broken, flat, or invalid model."
+                )
+            )
+
+
+        # ==============================
+        # MATERIAL DENSITY
+        # ==============================
 
         density = (
             MATERIAL_DENSITIES[
@@ -443,21 +347,80 @@ async def analyze_stl(
             ]
         )
 
-        (
-            solid_weight_g,
-            estimated_weight_g,
-            material_usage_factor
-        ) = calculate_print_weight(
-            volume_cm3,
-            density,
-            infill
+
+        # ==============================
+        # SOLID WEIGHT
+        # ==============================
+
+        solid_weight_g = (
+            volume_cm3 *
+            density
         )
 
-        # ----------------------------------------------------
+
+        # ==============================
+        # PRINT WEIGHT ESTIMATION
+        #
+        # Approximation:
+        # Shell/base contribution = 25%
+        # Infill contribution = up to 70%
+        # ==============================
+
+        shell_factor = 0.25
+
+        infill_factor = (
+            (infill / 100.0) *
+            0.70
+        )
+
+
+        material_usage_factor = (
+            shell_factor +
+            infill_factor
+        )
+
+
+        material_usage_factor = max(
+            0.10,
+            min(
+                material_usage_factor,
+                1.0
+            )
+        )
+
+
+        estimated_print_weight_g = (
+            solid_weight_g *
+            material_usage_factor
+        )
+
+
+        # ==============================
+        # VALIDATE WEIGHT
+        # ==============================
+
+        if estimated_print_weight_g < 0:
+
+            estimated_print_weight_g = 0
+
+
+        # ==============================
+        # MODEL SIZE
+        # ==============================
+
+        max_dimension_mm = max(
+            x_mm,
+            y_mm,
+            z_mm
+        )
+
+
+        # ==============================
         # RESPONSE
-        # ----------------------------------------------------
+        # ==============================
 
         return {
+
             "success": True,
 
             "status": "model_analyzed",
@@ -465,8 +428,36 @@ async def analyze_stl(
             "file_name":
                 file.filename,
 
+
+            # --------------------------
+            # UNIT INFORMATION
+            # --------------------------
+
             "processing_unit":
                 "mm",
+
+            "unit_information": {
+
+                "customer_unit_required":
+                    False,
+
+                "automatic_customer_unit_selection":
+                    False,
+
+                "standard_processing_unit":
+                    "mm",
+
+                "stl_unit_assumption":
+                    raw_unit_assumption,
+
+                "scale_factor_to_mm":
+                    scale_factor_to_mm
+            },
+
+
+            # --------------------------
+            # MATERIAL
+            # --------------------------
 
             "material":
                 material_key,
@@ -474,76 +465,135 @@ async def analyze_stl(
             "infill_percent":
                 round(infill, 2),
 
-            "automatic_scale_detection": {
-                "enabled": True,
-
-                "detected_interpretation":
-                    best_scale[
-                        "detected_unit"
-                    ],
-
-                "scale_factor_to_mm":
-                    scale_factor,
-
-                "customer_unit_input_required":
-                    False
-            },
-
-            "dimensions": {
-                "x_mm":
-                    round(normalized_x, 2),
-
-                "y_mm":
-                    round(normalized_y, 2),
-
-                "z_mm":
-                    round(normalized_z, 2)
-            },
-
-            "volume": {
-                "mm3":
-                    round(volume_mm3, 2),
-
-                "cm3":
-                    round(volume_cm3, 4)
-            },
-
             "density_g_cm3":
                 density,
 
+
+            # --------------------------
+            # DIMENSIONS
+            # --------------------------
+
+            "raw_stl_dimensions": {
+
+                "x":
+                    round(raw_x, 6),
+
+                "y":
+                    round(raw_y, 6),
+
+                "z":
+                    round(raw_z, 6)
+            },
+
+
+            "dimensions": {
+
+                "x_mm":
+                    round(x_mm, 3),
+
+                "y_mm":
+                    round(y_mm, 3),
+
+                "z_mm":
+                    round(z_mm, 3),
+
+                "max_dimension_mm":
+                    round(
+                        max_dimension_mm,
+                        3
+                    )
+            },
+
+
+            # --------------------------
+            # VOLUME
+            # --------------------------
+
+            "volume": {
+
+                "mm3":
+                    round(
+                        volume_mm3,
+                        3
+                    ),
+
+                "cm3":
+                    round(
+                        volume_cm3,
+                        6
+                    )
+            },
+
+
+            # --------------------------
+            # WEIGHT
+            # --------------------------
+
             "solid_weight_g":
-                round(solid_weight_g, 2),
+                round(
+                    solid_weight_g,
+                    3
+                ),
 
             "estimated_print_weight_g":
-                round(estimated_weight_g, 2),
+                round(
+                    estimated_print_weight_g,
+                    3
+                ),
+
+
+            # --------------------------
+            # CALCULATION INFO
+            # --------------------------
 
             "calculation": {
+
+                "shell_factor":
+                    shell_factor,
+
+                "infill_factor":
+                    round(
+                        infill_factor,
+                        4
+                    ),
+
                 "material_usage_factor":
                     round(
                         material_usage_factor,
                         4
-                    ),
-
-                "internal_standard":
-                    "All models are normalized to millimeters before processing"
+                    )
             },
 
-            "message":
-                "STL processed successfully with automatic scale normalization"
+
+            # --------------------------
+            # NOTES
+            # --------------------------
+
+            "note": (
+                "STL files do not normally store unit information. "
+                "For standard 3D printing processing, raw STL coordinates "
+                "are treated as millimeters."
+            )
         }
+
 
     except HTTPException:
         raise
+
 
     except Exception as e:
 
         raise HTTPException(
             status_code=500,
-            detail=(
-                "Could not process STL file: "
-                f"{str(e)}"
-            )
+            detail={
+                "error":
+                    "Could not process STL file",
+
+                "message":
+                    str(e)
+            }
         )
+
 
     finally:
 
@@ -551,6 +601,11 @@ async def analyze_stl(
             temp_path and
             os.path.exists(temp_path)
         ):
-            os.remove(
-                temp_path
-            )
+
+            try:
+                os.remove(
+                    temp_path
+                )
+
+            except Exception:
+                pass
