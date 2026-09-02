@@ -60,7 +60,6 @@ func healthHandler(w http.ResponseWriter, r *http.Request) {
 
 func corsMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set(
 			"Access-Control-Allow-Methods",
@@ -81,7 +80,6 @@ func corsMiddleware(next http.Handler) http.Handler {
 }
 
 func analyzeHandler(w http.ResponseWriter, r *http.Request) {
-
 	if r.Method != http.MethodPost {
 		sendError(
 			w,
@@ -110,7 +108,6 @@ func analyzeHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Shopify frontend sends the STL as "file"
 	file, header, err := r.FormFile("file")
-
 	if err != nil {
 		sendError(
 			w,
@@ -135,7 +132,6 @@ func analyzeHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	fileData, err := io.ReadAll(file)
-
 	if err != nil {
 		sendError(
 			w,
@@ -169,7 +165,6 @@ func analyzeHandler(w http.ResponseWriter, r *http.Request) {
 	infill := 20.0
 
 	if infillString := r.FormValue("infill"); infillString != "" {
-
 		parsedInfill, err := strconv.ParseFloat(
 			infillString,
 			64,
@@ -238,7 +233,6 @@ func analyzeHandler(w http.ResponseWriter, r *http.Request) {
 func calculateSTLVolume(
 	data []byte,
 ) (float64, uint32, error) {
-
 	if isBinarySTL(data) {
 		return calculateBinarySTLVolume(data)
 	}
@@ -247,7 +241,6 @@ func calculateSTLVolume(
 }
 
 func isBinarySTL(data []byte) bool {
-
 	if len(data) < 84 {
 		return false
 	}
@@ -264,7 +257,6 @@ func isBinarySTL(data []byte) bool {
 func calculateBinarySTLVolume(
 	data []byte,
 ) (float64, uint32, error) {
-
 	if len(data) < 84 {
 		return 0, 0, fmt.Errorf(
 			"binary STL file is too small",
@@ -284,11 +276,9 @@ func calculateBinarySTLVolume(
 	}
 
 	totalVolume := 0.0
-
 	offset := 84
 
 	for i := uint32(0); i < triangleCount; i++ {
-
 		// Skip normal vector
 		offset += 12
 
@@ -315,7 +305,6 @@ func calculateBinarySTLVolume(
 }
 
 func readBinaryPoint(data []byte) Point {
-
 	return Point{
 		X: float64(
 			math.Float32frombits(
@@ -338,16 +327,13 @@ func readBinaryPoint(data []byte) Point {
 func calculateASCIISTLVolume(
 	data []byte,
 ) (float64, uint32, error) {
-
 	lines := bytes.Split(data, []byte("\n"))
 
 	vertices := make([]Point, 0)
-
 	totalVolume := 0.0
 	triangleCount := uint32(0)
 
 	for _, lineBytes := range lines {
-
 		line := strings.TrimSpace(
 			string(lineBytes),
 		)
@@ -396,7 +382,6 @@ func calculateASCIISTLVolume(
 		)
 
 		if len(vertices) == 3 {
-
 			totalVolume += signedTriangleVolume(
 				vertices[0],
 				vertices[1],
@@ -404,7 +389,6 @@ func calculateASCIISTLVolume(
 			)
 
 			triangleCount++
-
 			vertices = vertices[:0]
 		}
 	}
@@ -423,25 +407,25 @@ func signedTriangleVolume(
 	p2 Point,
 	p3 Point,
 ) float64 {
-
-	return (
+	volume :=
 		p1.X*(p2.Y*p3.Z-p2.Z*p3.Y) -
 			p1.Y*(p2.X*p3.Z-p2.Z*p3.X) +
 			p1.Z*(p2.X*p3.Y-p2.Y*p3.X)
-	) / 6.0
+
+	return volume / 6.0
 }
 
 func getMaterialDensity(
 	material string,
 ) float64 {
-
 	densities := map[string]float64{
-		"PLA":  1.24,
-		"PLA+": 1.24,
-		"PETG": 1.27,
-		"ABS":  1.04,
-		"ASA":  1.07,
-		"TPU":  1.21,
+		"PLA":   1.24,
+		"PLA+":  1.24,
+		"PETG":  1.27,
+		"ABS":   1.04,
+		"ASA":   1.07,
+		"TPU":   1.21,
+		"NYLON": 1.15,
 	}
 
 	if density, exists := densities[material]; exists {
@@ -456,7 +440,6 @@ func estimatePrintWeight(
 	solidWeight float64,
 	infill float64,
 ) float64 {
-
 	/*
 		This is an estimate.
 
@@ -475,7 +458,6 @@ func round(
 	value float64,
 	places int,
 ) float64 {
-
 	power := math.Pow10(places)
 
 	return math.Round(value*power) / power
@@ -486,7 +468,6 @@ func sendError(
 	status int,
 	message string,
 ) {
-
 	w.Header().Set(
 		"Content-Type",
 		"application/json",
