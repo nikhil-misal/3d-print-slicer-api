@@ -483,3 +483,19 @@ func sendError(
 		},
 	)
 }
+func appHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+
+	fmt.Fprint(w, `
+<!DOCTYPE html>
+<html>
+<head>
+	<title>Custom 3D Print Orders</title>
+</head>
+<body>
+	<h1>Custom 3D Print Orders</h1>
+	<p>App is running successfully.</p>
+</body>
+</html>
+`)
+}
