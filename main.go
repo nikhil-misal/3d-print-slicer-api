@@ -34,6 +34,7 @@ func main() {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("/", healthHandler)
+	mux.HandleFunc("/app", appHandler)
 	mux.HandleFunc("/analyze", analyzeHandler)
 
 	port := os.Getenv("PORT")
