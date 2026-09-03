@@ -1,4 +1,3 @@
-```go
 // Render deployment update
 package main
 
