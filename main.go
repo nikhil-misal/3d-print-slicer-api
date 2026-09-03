@@ -365,8 +365,8 @@ func analyzeHandler(
 	the calculated price sent by the Shopify
 	frontend.
 
-	The actual Shopify line-item price is set
-	using priceOverride.
+	The actual Shopify custom line-item price
+	is set using originalUnitPriceWithCurrency.
 */
 
 type DraftOrderRequest struct {
@@ -524,7 +524,8 @@ func createDraftOrderHandler(
 	/*
 		Shopify GraphQL mutation
 
-		priceOverride is used so that the
+		originalUnitPriceWithCurrency is used
+		for the custom line item so that the
 		actual Draft Order price is the
 		calculated custom-print price.
 	*/
@@ -563,7 +564,7 @@ mutation draftOrderCreate(
 				map[string]interface{}{
 					"title":    request.Title,
 					"quantity": request.Quantity,
-					"priceOverride": map[string]interface{}{
+					"originalUnitPriceWithCurrency": map[string]interface{}{
 						"amount": fmt.Sprintf(
 							"%.2f",
 							request.Price,
@@ -674,11 +675,11 @@ mutation draftOrderCreate(
 		Data struct {
 			DraftOrderCreate struct {
 				DraftOrder *struct {
-					ID string `json:"id"`
+					ID         string `json:"id"`
 					InvoiceURL string `json:"invoiceUrl"`
 					TotalPriceSet struct {
 						ShopMoney struct {
-							Amount string `json:"amount"`
+							Amount       string `json:"amount"`
 							CurrencyCode string `json:"currencyCode"`
 						} `json:"shopMoney"`
 					} `json:"totalPriceSet"`
