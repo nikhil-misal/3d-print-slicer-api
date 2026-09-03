@@ -32,6 +32,70 @@ type AnalyzeResponse struct {
 	Infill                float64 `json:"infill"`
 }
 
+func getShopifyAccessToken() (string, error) {
+	shop := os.Getenv("SHOPIFY_SHOP")
+	clientID := os.Getenv("SHOPIFY_CLIENT_ID")
+	clientSecret := os.Getenv("SHOPIFY_CLIENT_SECRET")
+
+	if shop == "" || clientID == "" || clientSecret == "" {
+		return "", fmt.Errorf("Shopify environment variables are missing")
+	}
+
+	tokenURL := "https://" + shop + ".myshopify.com/admin/oauth/access_token"
+
+	form := url.Values{}
+	form.Set("grant_type", "client_credentials")
+	form.Set("client_id", clientID)
+	form.Set("client_secret", clientSecret)
+
+	req, err := http.NewRequest(
+		http.MethodPost,
+		tokenURL,
+		strings.NewReader(form.Encode()),
+	)
+	if err != nil {
+		return "", err
+	}
+
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	client := &http.Client{
+		Timeout: 30 * time.Second,
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", err
+	}
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return "", fmt.Errorf(
+			"Shopify token request failed: %s",
+			string(body),
+		)
+	}
+
+	var result struct {
+		AccessToken string `json:"access_token"`
+	}
+
+	if err := json.Unmarshal(body, &result); err != nil {
+		return "", err
+	}
+
+	if result.AccessToken == "" {
+		return "", fmt.Errorf("Shopify access token was not returned")
+	}
+
+	return result.AccessToken, nil
+}
+
 func main() {
 	mux := http.NewServeMux()
 
