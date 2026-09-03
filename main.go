@@ -561,13 +561,14 @@ mutation draftOrderCreate(
 		"input": map[string]interface{}{
 			"lineItems": []interface{}{
 				map[string]interface{}{
-					"title": request.Title,
+					"title":    request.Title,
 					"quantity": request.Quantity,
 					"priceOverride": map[string]interface{}{
 						"amount": fmt.Sprintf(
 							"%.2f",
 							request.Price,
 						),
+						"currencyCode": "INR",
 					},
 					"customAttributes": customAttributes,
 				},
