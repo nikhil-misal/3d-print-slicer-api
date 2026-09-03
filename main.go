@@ -50,7 +50,7 @@ const (
 
 	epsVertex = 1e-7
 	epsArea   = 1e-14
-	epsVolume = 1e-12
+	epsVolume = 1e-18
 
 	shopifyAPI = "2026-07"
 )
@@ -306,13 +306,22 @@ func analyzeHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if volumeMm3 <= epsVolume || math.IsNaN(volumeMm3) || math.IsInf(volumeMm3, 0) {
-		writeJSON(w, http.StatusBadRequest, map[string]interface{}{
-			"success": false,
-			"error":   "The analysis API did not return a valid model volume.",
-		})
-		return
-	}
+	if volumeMm3 <= epsVolume ||
+	math.IsNaN(volumeMm3) ||
+	math.IsInf(volumeMm3, 0) {
+
+	writeJSON(w, http.StatusBadRequest, map[string]interface{}{
+		"success":        false,
+		"file_type":      fileType,
+		"triangle_count": len(mesh.Triangles),
+		"vertex_count":   len(mesh.Vertices),
+		"closed_mesh":    closed,
+		"components":     components,
+		"error":          "Unable to calculate a valid solid volume. The STL may contain open edges, non-manifold geometry, self-intersections, or invalid mesh orientation.",
+	})
+
+	return
+}
 
 	volumeCm3 := volumeMm3 / 1000.0
 
@@ -1585,24 +1594,56 @@ func calculateRobustMeshVolume(mesh Mesh) (
 	/*
 		Compute oriented signed volume for each component.
 	*/
-	for ci := range components {
-		var signedVolume float64
+for ci := range components {
+	var signedVolume float64
 
-		for _, triangleIndex := range components[ci].Triangles {
-			tri := mesh.Triangles[triangleIndex]
+	// Use a local origin near the component.
+	// This dramatically improves floating-point precision
+	// for STL files whose coordinates are very large.
+	origin := Point{
+		X: (components[ci].BBox.Min.X + components[ci].BBox.Max.X) * 0.5,
+		Y: (components[ci].BBox.Min.Y + components[ci].BBox.Max.Y) * 0.5,
+		Z: (components[ci].BBox.Min.Z + components[ci].BBox.Max.Z) * 0.5,
+	}
 
-			a := mesh.Vertices[tri.A]
-			b := mesh.Vertices[tri.B]
-			c := mesh.Vertices[tri.C]
+	// Kahan compensated summation prevents small triangle
+	// contributions from being lost during large mesh calculations.
+	var compensation float64
 
-			if flip[triangleIndex] {
-				b, c = c, b
-			}
+	for _, triangleIndex := range components[ci].Triangles {
+		tri := mesh.Triangles[triangleIndex]
 
-			signedVolume += signedTriangleVolume(a, b, c)
+		a := mesh.Vertices[tri.A]
+		b := mesh.Vertices[tri.B]
+		c := mesh.Vertices[tri.C]
+
+		if flip[triangleIndex] {
+			b, c = c, b
 		}
 
-		signedVolume = math.Abs(signedVolume)
+		value := signedTriangleVolumeRelative(
+			a,
+			b,
+			c,
+			origin,
+		)
+
+		y := value - compensation
+		t := signedVolume + y
+		compensation = (t - signedVolume) - y
+		signedVolume = t
+	}
+
+	signedVolume = math.Abs(signedVolume)
+
+	if math.IsNaN(signedVolume) ||
+		math.IsInf(signedVolume, 0) ||
+		signedVolume <= epsVolume {
+		return 0, 0, false, fmt.Errorf(
+			"mesh component has zero or invalid volume",
+		)
+	}
+
 
 		if signedVolume <= epsVolume {
 			return 0, 0, false, fmt.Errorf(
@@ -1739,10 +1780,14 @@ func makeEdgeKey(a, b int) edgeKey {
 	}
 }
 
-func signedTriangleVolume(a, b, c Point) float64 {
+func signedTriangleVolumeRelative(a, b, c, origin Point) float64 {
+	ra := subtract(a, origin)
+	rb := subtract(b, origin)
+	rc := subtract(c, origin)
+
 	return dot(
-		a,
-		cross(b, c),
+		ra,
+		cross(rb, rc),
 	) / 6.0
 }
 
