@@ -1,3 +1,4 @@
+```go
 // Render deployment update
 package main
 
@@ -9,10 +10,10 @@ import (
 	"io"
 	"math"
 	"net/http"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
-	"net/url"
 	"time"
 )
 
@@ -57,7 +58,10 @@ func getShopifyAccessToken() (string, error) {
 		return "", err
 	}
 
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set(
+		"Content-Type",
+		"application/x-www-form-urlencoded",
+	)
 
 	client := &http.Client{
 		Timeout: 30 * time.Second,
@@ -67,6 +71,7 @@ func getShopifyAccessToken() (string, error) {
 	if err != nil {
 		return "", err
 	}
+
 	defer resp.Body.Close()
 
 	body, err := io.ReadAll(resp.Body)
@@ -90,7 +95,9 @@ func getShopifyAccessToken() (string, error) {
 	}
 
 	if result.AccessToken == "" {
-		return "", fmt.Errorf("Shopify access token was not returned")
+		return "", fmt.Errorf(
+			"Shopify access token was not returned",
+		)
 	}
 
 	return result.AccessToken, nil
@@ -102,51 +109,88 @@ func main() {
 	mux.HandleFunc("/", healthHandler)
 	mux.HandleFunc("/app", appHandler)
 	mux.HandleFunc("/analyze", analyzeHandler)
+	mux.HandleFunc(
+		"/create-draft-order",
+		createDraftOrderHandler,
+	)
 
 	port := os.Getenv("PORT")
+
 	if port == "" {
 		port = "8080"
 	}
 
-	fmt.Println("STL Analysis API running on port", port)
+	fmt.Println(
+		"STL Analysis API running on port",
+		port,
+	)
 
-	err := http.ListenAndServe(":"+port, corsMiddleware(mux))
+	err := http.ListenAndServe(
+		":"+port,
+		corsMiddleware(mux),
+	)
+
 	if err != nil {
 		panic(err)
 	}
 }
 
-func healthHandler(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
+func healthHandler(
+	w http.ResponseWriter,
+	r *http.Request,
+) {
+	w.Header().Set(
+		"Content-Type",
+		"application/json",
+	)
 
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"success": true,
-		"message": "STL Analysis API is running",
-	})
+	json.NewEncoder(w).Encode(
+		map[string]interface{}{
+			"success": true,
+			"message": "STL Analysis API is running",
+		},
+	)
 }
 
-func corsMiddleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set(
-			"Access-Control-Allow-Methods",
-			"POST, GET, OPTIONS",
-		)
-		w.Header().Set(
-			"Access-Control-Allow-Headers",
-			"Content-Type",
-		)
+func corsMiddleware(
+	next http.Handler,
+) http.Handler {
+	return http.HandlerFunc(
+		func(
+			w http.ResponseWriter,
+			r *http.Request,
+		) {
+			w.Header().Set(
+				"Access-Control-Allow-Origin",
+				"*",
+			)
 
-		if r.Method == http.MethodOptions {
-			w.WriteHeader(http.StatusNoContent)
-			return
-		}
+			w.Header().Set(
+				"Access-Control-Allow-Methods",
+				"POST, GET, OPTIONS",
+			)
 
-		next.ServeHTTP(w, r)
-	})
+			w.Header().Set(
+				"Access-Control-Allow-Headers",
+				"Content-Type",
+			)
+
+			if r.Method == http.MethodOptions {
+				w.WriteHeader(
+					http.StatusNoContent,
+				)
+				return
+			}
+
+			next.ServeHTTP(w, r)
+		},
+	)
 }
 
-func analyzeHandler(w http.ResponseWriter, r *http.Request) {
+func analyzeHandler(
+	w http.ResponseWriter,
+	r *http.Request,
+) {
 	if r.Method != http.MethodPost {
 		sendError(
 			w,
@@ -163,7 +207,10 @@ func analyzeHandler(w http.ResponseWriter, r *http.Request) {
 		50<<20,
 	)
 
-	err := r.ParseMultipartForm(50 << 20)
+	err := r.ParseMultipartForm(
+		50 << 20,
+	)
+
 	if err != nil {
 		sendError(
 			w,
@@ -175,6 +222,7 @@ func analyzeHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Shopify frontend sends the STL as "file"
 	file, header, err := r.FormFile("file")
+
 	if err != nil {
 		sendError(
 			w,
@@ -199,6 +247,7 @@ func analyzeHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	fileData, err := io.ReadAll(file)
+
 	if err != nil {
 		sendError(
 			w,
@@ -251,15 +300,15 @@ func analyzeHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Calculate STL volume
-	volumeMM3, triangleCount, err := calculateSTLVolume(
-		fileData,
-	)
+	volumeMM3, triangleCount, err :=
+		calculateSTLVolume(fileData)
 
 	if err != nil {
 		sendError(
 			w,
 			http.StatusBadRequest,
-			"Invalid or unsupported STL file: "+err.Error(),
+			"Invalid or unsupported STL file: "+
+				err.Error(),
 		)
 		return
 	}
@@ -268,7 +317,9 @@ func analyzeHandler(w http.ResponseWriter, r *http.Request) {
 	volumeCm3 := volumeMM3 / 1000.0
 
 	// Material density
-	density := getMaterialDensity(material)
+	density := getMaterialDensity(
+		material,
+	)
 
 	// Solid object weight
 	solidWeight := volumeCm3 * density
@@ -280,13 +331,22 @@ func analyzeHandler(w http.ResponseWriter, r *http.Request) {
 	)
 
 	response := AnalyzeResponse{
-		Success:               true,
-		VolumeCm3:             round(volumeCm3, 2),
-		SolidWeightG:          round(solidWeight, 2),
-		EstimatedPrintWeightG: round(estimatedWeight, 2),
-		TriangleCount:         triangleCount,
-		Material:              material,
-		Infill:                infill,
+		Success: true,
+		VolumeCm3: round(
+			volumeCm3,
+			2,
+		),
+		SolidWeightG: round(
+			solidWeight,
+			2,
+		),
+		EstimatedPrintWeightG: round(
+			estimatedWeight,
+			2,
+		),
+		TriangleCount: triangleCount,
+		Material: material,
+		Infill: infill,
 	}
 
 	w.Header().Set(
@@ -294,7 +354,426 @@ func analyzeHandler(w http.ResponseWriter, r *http.Request) {
 		"application/json",
 	)
 
-	json.NewEncoder(w).Encode(response)
+	json.NewEncoder(w).Encode(
+		response,
+	)
+}
+
+/*
+	Shopify Draft Order
+
+	This endpoint creates a Draft Order using
+	the calculated price sent by the Shopify
+	frontend.
+
+	The actual Shopify line-item price is set
+	using priceOverride.
+*/
+
+type DraftOrderRequest struct {
+	Price           float64 `json:"price"`
+	Quantity        int     `json:"quantity"`
+	Title           string  `json:"title"`
+	Material        string  `json:"material"`
+	Color           string  `json:"color"`
+	Weight          float64 `json:"weight"`
+	Volume          float64 `json:"volume"`
+	FileName        string  `json:"fileName"`
+	FileURL         string  `json:"fileUrl"`
+	FileID          string  `json:"fileId"`
+}
+
+func createDraftOrderHandler(
+	w http.ResponseWriter,
+	r *http.Request,
+) {
+	if r.Method != http.MethodPost {
+		sendError(
+			w,
+			http.StatusMethodNotAllowed,
+			"Only POST requests are allowed",
+		)
+		return
+	}
+
+	w.Header().Set(
+		"Content-Type",
+		"application/json",
+	)
+
+	var request DraftOrderRequest
+
+	err := json.NewDecoder(
+		r.Body,
+	).Decode(&request)
+
+	if err != nil {
+		sendError(
+			w,
+			http.StatusBadRequest,
+			"Invalid JSON request",
+		)
+		return
+	}
+
+	if request.Price <= 0 {
+		sendError(
+			w,
+			http.StatusBadRequest,
+			"Price must be greater than zero",
+		)
+		return
+	}
+
+	if request.Quantity < 1 {
+		request.Quantity = 1
+	}
+
+	if request.Title == "" {
+		request.Title = "Custom 3D Print"
+	}
+
+	/*
+		Shopify Client Credentials token
+	*/
+	accessToken, err := getShopifyAccessToken()
+
+	if err != nil {
+		sendError(
+			w,
+			http.StatusInternalServerError,
+			err.Error(),
+		)
+		return
+	}
+
+	shop := os.Getenv("SHOPIFY_SHOP")
+
+	if shop == "" {
+		sendError(
+			w,
+			http.StatusInternalServerError,
+			"SHOPIFY_SHOP is missing",
+		)
+		return
+	}
+
+	/*
+		Shopify Admin GraphQL endpoint
+	*/
+	graphqlURL :=
+		"https://" +
+			shop +
+			".myshopify.com" +
+			"/admin/api/2026-07/graphql.json"
+
+	/*
+		Custom attributes
+
+		These are saved inside the Draft Order
+		and will also be visible with the order.
+	*/
+	customAttributes := []map[string]string{
+		{
+			"key":   "Material",
+			"value": request.Material,
+		},
+		{
+			"key":   "Color",
+			"value": request.Color,
+		},
+		{
+			"key":   "Print Weight",
+			"value": fmt.Sprintf(
+				"%.2f g",
+				request.Weight,
+			),
+		},
+		{
+			"key":   "Model Volume",
+			"value": fmt.Sprintf(
+				"%.2f cm³",
+				request.Volume,
+			),
+		},
+		{
+			"key":   "STL File Name",
+			"value": request.FileName,
+		},
+	}
+
+	if request.FileURL != "" {
+		customAttributes = append(
+			customAttributes,
+			map[string]string{
+				"key":   "STL File URL",
+				"value": request.FileURL,
+			},
+		)
+	}
+
+	if request.FileID != "" {
+		customAttributes = append(
+			customAttributes,
+			map[string]string{
+				"key":   "STL File ID",
+				"value": request.FileID,
+			},
+		)
+	}
+
+	/*
+		Shopify GraphQL mutation
+
+		priceOverride is used so that the
+		actual Draft Order price is the
+		calculated custom-print price.
+	*/
+	query := `
+mutation draftOrderCreate(
+	$input: DraftOrderInput!
+) {
+	draftOrderCreate(input: $input) {
+		draftOrder {
+			id
+			invoiceUrl
+			totalPriceSet {
+				shopMoney {
+					amount
+					currencyCode
+				}
+			}
+		}
+		userErrors {
+			field
+			message
+		}
+	}
+}
+`
+
+	/*
+		Build variables.
+
+		Price is per unit.
+		Quantity is handled by Shopify.
+	*/
+	variables := map[string]interface{}{
+		"input": map[string]interface{}{
+			"lineItems": []interface{}{
+				map[string]interface{}{
+					"title": request.Title,
+					"quantity": request.Quantity,
+					"priceOverride": map[string]interface{}{
+						"amount": fmt.Sprintf(
+							"%.2f",
+							request.Price,
+						),
+					},
+					"customAttributes": customAttributes,
+				},
+			},
+			"customAttributes": []map[string]string{
+				{
+					"key":   "Order Type",
+					"value": "Custom 3D Print",
+				},
+			},
+		},
+	}
+
+	payload := map[string]interface{}{
+		"query":     query,
+		"variables": variables,
+	}
+
+	payloadBytes, err := json.Marshal(
+		payload,
+	)
+
+	if err != nil {
+		sendError(
+			w,
+			http.StatusInternalServerError,
+			"Could not create Shopify request",
+		)
+		return
+	}
+
+	req, err := http.NewRequest(
+		http.MethodPost,
+		graphqlURL,
+		bytes.NewReader(payloadBytes),
+	)
+
+	if err != nil {
+		sendError(
+			w,
+			http.StatusInternalServerError,
+			"Could not create Shopify request",
+		)
+		return
+	}
+
+	req.Header.Set(
+		"Content-Type",
+		"application/json",
+	)
+
+	req.Header.Set(
+		"X-Shopify-Access-Token",
+		accessToken,
+	)
+
+	client := &http.Client{
+		Timeout: 30 * time.Second,
+	}
+
+	resp, err := client.Do(req)
+
+	if err != nil {
+		sendError(
+			w,
+			http.StatusBadGateway,
+			"Could not connect to Shopify: "+
+				err.Error(),
+		)
+		return
+	}
+
+	defer resp.Body.Close()
+
+	responseBody, err := io.ReadAll(
+		resp.Body,
+	)
+
+	if err != nil {
+		sendError(
+			w,
+			http.StatusBadGateway,
+			"Could not read Shopify response",
+		)
+		return
+	}
+
+	if resp.StatusCode < 200 ||
+		resp.StatusCode >= 300 {
+		sendError(
+			w,
+			http.StatusBadGateway,
+			"Shopify API returned an error: "+
+				string(responseBody),
+		)
+		return
+	}
+
+	/*
+		Shopify response structure
+	*/
+	var shopifyResponse struct {
+		Data struct {
+			DraftOrderCreate struct {
+				DraftOrder *struct {
+					ID string `json:"id"`
+					InvoiceURL string `json:"invoiceUrl"`
+					TotalPriceSet struct {
+						ShopMoney struct {
+							Amount string `json:"amount"`
+							CurrencyCode string `json:"currencyCode"`
+						} `json:"shopMoney"`
+					} `json:"totalPriceSet"`
+				} `json:"draftOrder"`
+
+				UserErrors []struct {
+					Field   []string `json:"field"`
+					Message string   `json:"message"`
+				} `json:"userErrors"`
+			} `json:"draftOrderCreate"`
+		} `json:"data"`
+
+		Errors []struct {
+			Message string `json:"message"`
+		} `json:"errors"`
+	}
+
+	err = json.Unmarshal(
+		responseBody,
+		&shopifyResponse,
+	)
+
+	if err != nil {
+		sendError(
+			w,
+			http.StatusBadGateway,
+			"Invalid Shopify response: "+
+				err.Error(),
+		)
+		return
+	}
+
+	/*
+		GraphQL-level errors
+	*/
+	if len(shopifyResponse.Errors) > 0 {
+		sendError(
+			w,
+			http.StatusBadGateway,
+			"Shopify GraphQL error: "+
+				shopifyResponse.Errors[0].Message,
+		)
+		return
+	}
+
+	draftOrderResult :=
+		shopifyResponse.
+			Data.
+			DraftOrderCreate
+
+	/*
+		Draft Order validation errors
+	*/
+	if len(draftOrderResult.UserErrors) > 0 {
+		sendError(
+			w,
+			http.StatusBadRequest,
+			draftOrderResult.UserErrors[0].Message,
+		)
+		return
+	}
+
+	if draftOrderResult.DraftOrder == nil {
+		sendError(
+			w,
+			http.StatusBadGateway,
+			"Shopify did not create the Draft Order",
+		)
+		return
+	}
+
+	/*
+		Return checkout URL to frontend.
+	*/
+	json.NewEncoder(w).Encode(
+		map[string]interface{}{
+			"success": true,
+			"draftOrderId":
+				draftOrderResult.DraftOrder.ID,
+			"checkoutUrl":
+				draftOrderResult.DraftOrder.InvoiceURL,
+			"totalPrice":
+				draftOrderResult.
+					DraftOrder.
+					TotalPriceSet.
+					ShopMoney.
+					Amount,
+			"currency":
+				draftOrderResult.
+					DraftOrder.
+					TotalPriceSet.
+					ShopMoney.
+					CurrencyCode,
+		},
+	)
 }
 
 func calculateSTLVolume(
@@ -307,16 +786,20 @@ func calculateSTLVolume(
 	return calculateASCIISTLVolume(data)
 }
 
-func isBinarySTL(data []byte) bool {
+func isBinarySTL(
+	data []byte,
+) bool {
 	if len(data) < 84 {
 		return false
 	}
 
-	triangleCount := binary.LittleEndian.Uint32(
-		data[80:84],
-	)
+	triangleCount :=
+		binary.LittleEndian.Uint32(
+			data[80:84],
+		)
 
-	expectedSize := 84 + int(triangleCount)*50
+	expectedSize :=
+		84 + int(triangleCount)*50
 
 	return len(data) == expectedSize
 }
@@ -330,11 +813,13 @@ func calculateBinarySTLVolume(
 		)
 	}
 
-	triangleCount := binary.LittleEndian.Uint32(
-		data[80:84],
-	)
+	triangleCount :=
+		binary.LittleEndian.Uint32(
+			data[80:84],
+		)
 
-	expectedSize := 84 + int(triangleCount)*50
+	expectedSize :=
+		84 + int(triangleCount)*50
 
 	if len(data) < expectedSize {
 		return 0, 0, fmt.Errorf(
@@ -349,13 +834,19 @@ func calculateBinarySTLVolume(
 		// Skip normal vector
 		offset += 12
 
-		p1 := readBinaryPoint(data[offset:])
+		p1 := readBinaryPoint(
+			data[offset:],
+		)
 		offset += 12
 
-		p2 := readBinaryPoint(data[offset:])
+		p2 := readBinaryPoint(
+			data[offset:],
+		)
 		offset += 12
 
-		p3 := readBinaryPoint(data[offset:])
+		p3 := readBinaryPoint(
+			data[offset:],
+		)
 		offset += 12
 
 		// Skip attribute byte count
@@ -368,24 +859,34 @@ func calculateBinarySTLVolume(
 		)
 	}
 
-	return math.Abs(totalVolume), triangleCount, nil
+	return math.Abs(
+		totalVolume,
+	), triangleCount, nil
 }
 
-func readBinaryPoint(data []byte) Point {
+func readBinaryPoint(
+	data []byte,
+) Point {
 	return Point{
 		X: float64(
 			math.Float32frombits(
-				binary.LittleEndian.Uint32(data[0:4]),
+				binary.LittleEndian.Uint32(
+					data[0:4],
+				),
 			),
 		),
 		Y: float64(
 			math.Float32frombits(
-				binary.LittleEndian.Uint32(data[4:8]),
+				binary.LittleEndian.Uint32(
+					data[4:8],
+				),
 			),
 		),
 		Z: float64(
 			math.Float32frombits(
-				binary.LittleEndian.Uint32(data[8:12]),
+				binary.LittleEndian.Uint32(
+					data[8:12],
+				),
 			),
 		),
 	}
@@ -394,7 +895,10 @@ func readBinaryPoint(data []byte) Point {
 func calculateASCIISTLVolume(
 	data []byte,
 ) (float64, uint32, error) {
-	lines := bytes.Split(data, []byte("\n"))
+	lines := bytes.Split(
+		data,
+		[]byte("\n"),
+	)
 
 	vertices := make([]Point, 0)
 	totalVolume := 0.0
@@ -456,6 +960,7 @@ func calculateASCIISTLVolume(
 			)
 
 			triangleCount++
+
 			vertices = vertices[:0]
 		}
 	}
@@ -466,7 +971,9 @@ func calculateASCIISTLVolume(
 		)
 	}
 
-	return math.Abs(totalVolume), triangleCount, nil
+	return math.Abs(
+		totalVolume,
+	), triangleCount, nil
 }
 
 func signedTriangleVolume(
@@ -488,7 +995,7 @@ func getMaterialDensity(
 	densities := map[string]float64{
 		"PLA":   1.24,
 		"PLA+":  1.24,
-		"PETG":  1.27,
+		"PETG": 1.27,
 		"ABS":   1.04,
 		"ASA":   1.07,
 		"TPU":   1.21,
@@ -515,7 +1022,8 @@ func estimatePrintWeight(
 	*/
 
 	estimatedMaterialFactor :=
-		0.15 + (0.85 * infill / 100.0)
+		0.15 +
+			(0.85 * infill / 100.0)
 
 	return solidWeight *
 		estimatedMaterialFactor
@@ -527,7 +1035,9 @@ func round(
 ) float64 {
 	power := math.Pow10(places)
 
-	return math.Round(value*power) / power
+	return math.Round(
+		value*power,
+	) / power
 }
 
 func sendError(
@@ -549,10 +1059,19 @@ func sendError(
 		},
 	)
 }
-func appHandler(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 
-	fmt.Fprint(w, `
+func appHandler(
+	w http.ResponseWriter,
+	r *http.Request,
+) {
+	w.Header().Set(
+		"Content-Type",
+		"text/html; charset=utf-8",
+	)
+
+	fmt.Fprint(
+		w,
+		`
 <!DOCTYPE html>
 <html>
 <head>
@@ -563,5 +1082,7 @@ func appHandler(w http.ResponseWriter, r *http.Request) {
 	<p>App is running successfully.</p>
 </body>
 </html>
-`)
+`,
+	)
 }
+```
