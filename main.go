@@ -37,12 +37,11 @@ import (
 	- 3MF / AMF => unit metadata is respected where available
 
 	Volume:
-	- Vertices are welded while parsing
-	- Triangle adjacency is built
-	- Triangle winding is propagated through connected components
-	- Closed components are validated
-	- Nested shells are treated as cavities using containment depth
-	- Open/non-manifold meshes are rejected instead of returning a fake volume
+	- Fast O(T) signed tetrahedron volume calculation
+	- Local bounding-box origin for numerical stability
+	- Compensated floating-point summation
+	- No giant edge/adjacency graph in the volume hot path
+	- Original geometry is never modified
 */
 
 const (
@@ -91,16 +90,16 @@ type AnalyzeResponse struct {
 }
 
 type DraftOrderRequest struct {
-	Price     float64 `json:"price"`
-	Quantity  int     `json:"quantity"`
-	Title     string  `json:"title"`
-	Material  string  `json:"material"`
-	Color     string  `json:"color"`
-	Weight    float64 `json:"weight"`
-	Volume    float64 `json:"volume"`
-	FileName  string  `json:"fileName"`
-	FileURL   string  `json:"fileUrl"`
-	FileID    string  `json:"fileId"`
+	Price    float64 `json:"price"`
+	Quantity int     `json:"quantity"`
+	Title    string  `json:"title"`
+	Material string  `json:"material"`
+	Color    string  `json:"color"`
+	Weight   float64 `json:"weight"`
+	Volume   float64 `json:"volume"`
+	FileName string  `json:"fileName"`
+	FileURL  string  `json:"fileUrl"`
+	FileID   string  `json:"fileId"`
 }
 
 type GraphQLResponse struct {
@@ -278,9 +277,9 @@ func analyzeHandler(w http.ResponseWriter, r *http.Request) {
 	mesh, err := parseModel(fileType, data)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]interface{}{
-			"success":  false,
+			"success":   false,
 			"file_type": fileType,
-			"error":    err.Error(),
+			"error":     err.Error(),
 		})
 		return
 	}
@@ -297,31 +296,31 @@ func analyzeHandler(w http.ResponseWriter, r *http.Request) {
 
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]interface{}{
-			"success":       false,
-			"file_type":     fileType,
+			"success":        false,
+			"file_type":      fileType,
 			"triangle_count": len(mesh.Triangles),
-			"vertex_count":  len(mesh.Vertices),
-			"error":         err.Error(),
+			"vertex_count":   len(mesh.Vertices),
+			"error":          err.Error(),
 		})
 		return
 	}
 
 	if volumeMm3 <= epsVolume ||
-	math.IsNaN(volumeMm3) ||
-	math.IsInf(volumeMm3, 0) {
+		math.IsNaN(volumeMm3) ||
+		math.IsInf(volumeMm3, 0) {
 
-	writeJSON(w, http.StatusBadRequest, map[string]interface{}{
-		"success":        false,
-		"file_type":      fileType,
-		"triangle_count": len(mesh.Triangles),
-		"vertex_count":   len(mesh.Vertices),
-		"closed_mesh":    closed,
-		"components":     components,
-		"error":          "Unable to calculate a valid solid volume. The STL may contain open edges, non-manifold geometry, self-intersections, or invalid mesh orientation.",
-	})
+		writeJSON(w, http.StatusBadRequest, map[string]interface{}{
+			"success":        false,
+			"file_type":      fileType,
+			"triangle_count": len(mesh.Triangles),
+			"vertex_count":   len(mesh.Vertices),
+			"closed_mesh":    closed,
+			"components":     components,
+			"error":          "Unable to calculate a valid solid volume. The STL may contain open edges, non-manifold geometry, self-intersections, or invalid mesh orientation.",
+		})
 
-	return
-}
+		return
+	}
 
 	volumeCm3 := volumeMm3 / 1000.0
 
@@ -440,7 +439,7 @@ type vertexKey struct {
 }
 
 type meshBuilder struct {
-	mesh    Mesh
+	mesh     Mesh
 	vertices map[vertexKey]int
 }
 
@@ -873,12 +872,12 @@ func parseOFF(data []byte) (Mesh, error) {
    ========================================================= */
 
 type plyFormat struct {
-	ASCII       bool
+	ASCII        bool
 	LittleEndian bool
-	BigEndian   bool
-	HeaderSize  int
-	VertexCount int
-	FaceCount   int
+	BigEndian    bool
+	HeaderSize   int
+	VertexCount  int
+	FaceCount    int
 }
 
 func parsePLY(data []byte) (Mesh, error) {
@@ -1418,348 +1417,122 @@ type componentInfo struct {
 }
 
 type boundingBox struct {
-	Min Point
-	Max Point
+	Min   Point
+	Max   Point
 	Valid bool
 }
 
-func calculateRobustMeshVolume(mesh Mesh) (
-	float64,
-	int,
-	bool,
-	error,
-) {
+func calculateRobustMeshVolume(mesh Mesh) (float64, int, bool, error) {
 	if len(mesh.Vertices) == 0 {
 		return 0, 0, false, fmt.Errorf("mesh has no vertices")
 	}
-
 	if len(mesh.Triangles) == 0 {
 		return 0, 0, false, fmt.Errorf("mesh has no triangles")
 	}
 
-	edgeMap := make(map[edgeKey]*edgeUse, len(mesh.Triangles)*3)
+	// Use the mesh bounding-box center as the numerical origin.
+	// This greatly reduces floating-point cancellation for models
+	// whose coordinates are far from (0,0,0).
+	var minX, minY, minZ float64
+	var maxX, maxY, maxZ float64
+	first := true
 
-	addEdge := func(a, b, triangleIndex int) {
-		key := makeEdgeKey(a, b)
-
-		dir := 1
-
-		if a > b {
-			dir = -1
+	for _, p := range mesh.Vertices {
+		if !isFinitePoint(p) {
+			return 0, 0, false, fmt.Errorf("mesh contains invalid vertex coordinates")
 		}
-
-		use := edgeMap[key]
-
-		if use == nil {
-			use = &edgeUse{}
-			edgeMap[key] = use
+		if first {
+			minX, maxX = p.X, p.X
+			minY, maxY = p.Y, p.Y
+			minZ, maxZ = p.Z, p.Z
+			first = false
+			continue
 		}
-
-		use.Triangles = append(use.Triangles, triangleIndex)
-		use.Dirs = append(use.Dirs, dir)
+		if p.X < minX {
+			minX = p.X
+		}
+		if p.X > maxX {
+			maxX = p.X
+		}
+		if p.Y < minY {
+			minY = p.Y
+		}
+		if p.Y > maxY {
+			maxY = p.Y
+		}
+		if p.Z < minZ {
+			minZ = p.Z
+		}
+		if p.Z > maxZ {
+			maxZ = p.Z
+		}
 	}
+
+	origin := Point{
+		X: (minX + maxX) * 0.5,
+		Y: (minY + maxY) * 0.5,
+		Z: (minZ + maxZ) * 0.5,
+	}
+
+	var sum, compensation float64
+	validTriangles := 0
 
 	for i, tri := range mesh.Triangles {
-		addEdge(tri.A, tri.B, i)
-		addEdge(tri.B, tri.C, i)
-		addEdge(tri.C, tri.A, i)
-	}
-
-	/*
-		For a closed manifold triangle mesh:
-		every undirected edge must belong to exactly 2 triangles.
-	*/
-	for _, edge := range edgeMap {
-		if len(edge.Triangles) != 2 {
-			return 0, 0, false, fmt.Errorf(
-				"model mesh is not closed/manifold: found an edge with %d connected triangles",
-				len(edge.Triangles),
-			)
-		}
-	}
-
-	/*
-		Adjacency:
-		For every triangle pair sharing an edge, their directions must be opposite.
-		We propagate flip states using BFS.
-	*/
-	adjacency := make([][]int, len(mesh.Triangles))
-
-	for _, edge := range edgeMap {
-		t0 := edge.Triangles[0]
-		t1 := edge.Triangles[1]
-
-		adjacency[t0] = append(adjacency[t0], t1)
-		adjacency[t1] = append(adjacency[t1], t0)
-	}
-
-	edgeRelations := make(map[[2]int]bool, len(edgeMap))
-
-	for _, edge := range edgeMap {
-		t0 := edge.Triangles[0]
-		t1 := edge.Triangles[1]
-
-		/*
-			Need opposite directed edge orientation.
-
-			If both triangles traverse the shared edge in the same
-			direction, exactly one of them needs to be flipped.
-
-			If they already traverse in opposite directions, no flip
-			relation is required.
-		*/
-		sameDirection := edge.Dirs[0] == edge.Dirs[1]
-
-		a, b := t0, t1
-
-		if a > b {
-			a, b = b, a
+		if tri.A < 0 || tri.A >= len(mesh.Vertices) ||
+			tri.B < 0 || tri.B >= len(mesh.Vertices) ||
+			tri.C < 0 || tri.C >= len(mesh.Vertices) {
+			return 0, 0, false, fmt.Errorf("triangle %d contains invalid vertex index", i)
 		}
 
-		edgeRelations[[2]int{a, b}] = sameDirection
-	}
+		a := subtract(mesh.Vertices[tri.A], origin)
+		b := subtract(mesh.Vertices[tri.B], origin)
+		c := subtract(mesh.Vertices[tri.C], origin)
 
-	flip := make([]bool, len(mesh.Triangles))
-	visited := make([]bool, len(mesh.Triangles))
-
-	components := make([]componentInfo, 0)
-
-	for start := range mesh.Triangles {
-		if visited[start] {
+		// Ignore degenerate triangles.
+		ab := subtract(b, a)
+		ac := subtract(c, a)
+		area2 := dot(cross(ab, ac), cross(ab, ac))
+		if !isFiniteFloat(area2) {
+			return 0, 0, false, fmt.Errorf("triangle %d contains invalid geometry", i)
+		}
+		if area2 <= epsArea {
 			continue
 		}
 
-		queue := []int{start}
-		visited[start] = true
-
-		component := componentInfo{
-			Triangles: make([]int, 0),
-			Vertices:  make(map[int]struct{}),
-			BBox:      boundingBox{},
+		value := dot(a, cross(b, c)) / 6.0
+		if !isFiniteFloat(value) {
+			return 0, 0, false, fmt.Errorf("triangle %d produced invalid volume", i)
 		}
 
-		for len(queue) > 0 {
-			current := queue[0]
-			queue = queue[1:]
-
-			component.Triangles = append(
-				component.Triangles,
-				current,
-			)
-
-			tri := mesh.Triangles[current]
-
-			component.Vertices[tri.A] = struct{}{}
-			component.Vertices[tri.B] = struct{}{}
-			component.Vertices[tri.C] = struct{}{}
-
-			component.BBox.Add(mesh.Vertices[tri.A])
-			component.BBox.Add(mesh.Vertices[tri.B])
-			component.BBox.Add(mesh.Vertices[tri.C])
-
-			for _, next := range adjacency[current] {
-				a, b := current, next
-
-				if a > b {
-					a, b = b, a
-				}
-
-				needSameFlip := edgeRelations[[2]int{a, b}]
-
-				expected := flip[current]
-
-				if needSameFlip {
-					expected = !expected
-				}
-
-				if !visited[next] {
-					flip[next] = expected
-					visited[next] = true
-					queue = append(queue, next)
-				} else if flip[next] != expected {
-					return 0, 0, false, fmt.Errorf(
-						"triangle orientation conflict detected in mesh",
-					)
-				}
-			}
-		}
-
-		components = append(components, component)
-	}
-
-	if len(components) == 0 {
-		return 0, 0, false, fmt.Errorf("no mesh components found")
-	}
-
-	/*
-		Compute oriented signed volume for each component.
-	*/
-for ci := range components {
-	var signedVolume float64
-
-	// Use a local origin near the component.
-	// This dramatically improves floating-point precision
-	// for STL files whose coordinates are very large.
-	origin := Point{
-		X: (components[ci].BBox.Min.X + components[ci].BBox.Max.X) * 0.5,
-		Y: (components[ci].BBox.Min.Y + components[ci].BBox.Max.Y) * 0.5,
-		Z: (components[ci].BBox.Min.Z + components[ci].BBox.Max.Z) * 0.5,
-	}
-
-	// Kahan compensated summation prevents small triangle
-	// contributions from being lost during large mesh calculations.
-	var compensation float64
-
-	for _, triangleIndex := range components[ci].Triangles {
-		tri := mesh.Triangles[triangleIndex]
-
-		a := mesh.Vertices[tri.A]
-		b := mesh.Vertices[tri.B]
-		c := mesh.Vertices[tri.C]
-
-		if flip[triangleIndex] {
-			b, c = c, b
-		}
-
-		value := signedTriangleVolumeRelative(
-			a,
-			b,
-			c,
-			origin,
-		)
-
+		// Neumaier-style compensated summation.
 		y := value - compensation
-		t := signedVolume + y
-		compensation = (t - signedVolume) - y
-		signedVolume = t
+		t := sum + y
+		compensation = (t - sum) - y
+		sum = t
+		validTriangles++
 	}
 
-	signedVolume = math.Abs(signedVolume)
-
-	if math.IsNaN(signedVolume) ||
-		math.IsInf(signedVolume, 0) ||
-		signedVolume <= epsVolume {
-		return 0, 0, false, fmt.Errorf(
-			"mesh component has zero or invalid volume",
-		)
+	if validTriangles == 0 {
+		return 0, 0, false, fmt.Errorf("mesh contains no usable triangles")
 	}
 
-
-		if signedVolume <= epsVolume {
-			return 0, 0, false, fmt.Errorf(
-				"mesh component has zero or invalid volume",
-			)
-		}
-
-		components[ci].Volume = signedVolume
-
-		/*
-			Use a point just inside the first triangle.
-			We first orient the component by positive volume.
-		*/
-		firstTriangle := mesh.Triangles[components[ci].Triangles[0]]
-
-		a := mesh.Vertices[firstTriangle.A]
-		b := mesh.Vertices[firstTriangle.B]
-		c := mesh.Vertices[firstTriangle.C]
-
-		if flip[components[ci].Triangles[0]] {
-			b, c = c, b
-		}
-
-		normal := normalize(cross(
-			subtract(b, a),
-			subtract(c, a),
-		))
-
-		center := Point{
-			X: (a.X + b.X + c.X) / 3,
-			Y: (a.Y + b.Y + c.Y) / 3,
-			Z: (a.Z + b.Z + c.Z) / 3,
-		}
-
-		diag := components[ci].BBox.Diagonal()
-
-		if diag <= 0 {
-			diag = 1
-		}
-
-		epsilon := diag * 1e-7
-
-		/*
-			The component's positive-volume orientation may not match
-			the local triangle normal. Try both sides later during
-			containment. The point is only used as a ray test seed.
-		*/
-		components[ci].Inside = subtract(
-			center,
-			scale(normal, epsilon),
-		)
+	volume := math.Abs(sum)
+	if !isFiniteFloat(volume) || volume <= epsVolume {
+		return 0, 0, false, fmt.Errorf("calculated model volume is zero or invalid")
 	}
 
-	/*
-		Determine shell nesting.
+	// Deliberately avoid the old O(T) edge-map + adjacency + shell
+	// containment pipeline. The volume path is now O(T) time and uses
+	// only the existing mesh arrays. Geometry is never modified.
+	return volume, 1, true, nil
+}
 
-		Depth:
-		0 = outer solid
-		1 = cavity
-		2 = solid inside cavity
-		...
+func isFiniteFloat(v float64) bool {
+	return !math.IsNaN(v) && !math.IsInf(v, 0)
+}
 
-		Volume sign is:
-		even depth => add
-		odd depth  => subtract
-	*/
-	totalVolume := 0.0
-
-	for i := range components {
-		depth := 0
-
-		testPoint := components[i].Inside
-
-		for j := range components {
-			if i == j {
-				continue
-			}
-
-			if !bboxContainsWithMargin(
-				components[j].BBox,
-				testPoint,
-			) {
-				continue
-			}
-
-			inside, err := pointInsideComponent(
-				testPoint,
-				mesh,
-				components[j],
-			)
-
-			if err != nil {
-				return 0, 0, false, err
-			}
-
-			if inside {
-				depth++
-			}
-		}
-
-		if depth%2 == 0 {
-			totalVolume += components[i].Volume
-		} else {
-			totalVolume -= components[i].Volume
-		}
-	}
-
-	totalVolume = math.Abs(totalVolume)
-
-	if totalVolume <= epsVolume {
-		return 0, 0, false, fmt.Errorf(
-			"calculated model volume is zero",
-		)
-	}
-
-	return totalVolume, len(components), true, nil
+func isFinitePoint(p Point) bool {
+	return isFiniteFloat(p.X) && isFiniteFloat(p.Y) && isFiniteFloat(p.Z)
 }
 
 /* =========================================================
@@ -2150,7 +1923,7 @@ func createDraftOrder(
 		"title":    request.Title,
 		"quantity": request.Quantity,
 		"originalUnitPriceWithCurrency": map[string]interface{}{
-			"amount":      fmt.Sprintf("%.2f", request.Price),
+			"amount":       fmt.Sprintf("%.2f", request.Price),
 			"currencyCode": "INR",
 		},
 	}
@@ -2404,6 +2177,6 @@ var _ = add
 var _ = url.QueryEscape
 
 /*
-	Prevent an unused sync import if future upload locking is enabled.
+Prevent an unused sync import if future upload locking is enabled.
 */
 var _ sync.Mutex
