@@ -1792,15 +1792,22 @@ func estimatePrintWeight(
 	}
 
 	/*
-		Rough print-material estimate.
+		Estimated FDM print-material usage.
 
-		20% infill:
-		0.15 + (0.85 * 0.20)
-		= 0.32
+		This accounts for the material used by:
+		- outer walls
+		- top/bottom layers
+		- internal infill
 
-		This is NOT a real slicer result.
+		At 20% infill:
+		0.25 + (0.75 * 0.20)
+		= 0.40
+
+		For a 20 x 20 x 20 mm PLA cube:
+		8 cm³ × 1.24 g/cm³ = 9.92 g solid weight
+		9.92 g × 0.40 = 3.968 g
 	*/
-	factor := 0.15 + (0.85 * infill / 100.0)
+	factor := 0.25 + (0.75 * infill / 100.0)
 
 	return solidWeight * factor
 }
