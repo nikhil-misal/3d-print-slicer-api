@@ -1782,15 +1782,15 @@ func materialDensity(material string) float64 {
 }
 
 const (
-    defaultWallThicknessMm = 0.8
-    printProcessFactor      = 1.02
+	defaultWallThicknessMm = 0.8
+	printProcessFactor     = 1.02
 )
 
 func estimatePrintWeight(
-    mesh Mesh,
-    volumeCm3 float64,
-    density float64,
-    infill float64,
+	mesh Mesh,
+	volumeCm3 float64,
+	density float64,
+	infill float64,
 ) float64 {
 	if infill < 0 {
 		infill = 0
@@ -1800,18 +1800,76 @@ func estimatePrintWeight(
 		infill = 100
 	}
 
-	/*
-		Rough print-material estimate.
+	if volumeCm3 <= 0 || density <= 0 {
+		return 0
+	}
 
-		20% infill:
-		0.15 + (0.85 * 0.20)
-		= 0.32
+	surfaceAreaMm2 := calculateSurfaceArea(mesh)
 
-		This is NOT a real slicer result.
-	*/
-	factor := 0.15 + (0.85 * infill / 100.0)
+	modelVolumeMm3 := volumeCm3 * 1000.0
 
-	return solidWeight * factor
+	shellVolumeMm3 :=
+		surfaceAreaMm2 * defaultWallThicknessMm
+
+	if shellVolumeMm3 > modelVolumeMm3 {
+		shellVolumeMm3 = modelVolumeMm3
+	}
+
+	if shellVolumeMm3 < 0 {
+		shellVolumeMm3 = 0
+	}
+
+	remainingVolumeMm3 :=
+		modelVolumeMm3 - shellVolumeMm3
+
+	infillVolumeMm3 :=
+		remainingVolumeMm3 * (infill / 100.0)
+
+	estimatedMaterialVolumeMm3 :=
+		shellVolumeMm3 + infillVolumeMm3
+
+	estimatedVolumeCm3 :=
+		estimatedMaterialVolumeMm3 / 1000.0
+
+	estimatedWeight :=
+		estimatedVolumeCm3 * density
+
+	estimatedWeight *= printProcessFactor
+
+	return estimatedWeight
+}
+
+func calculateSurfaceArea(mesh Mesh) float64 {
+	var area float64
+
+	for _, tri := range mesh.Triangles {
+		if tri.A < 0 ||
+			tri.B < 0 ||
+			tri.C < 0 ||
+			tri.A >= len(mesh.Vertices) ||
+			tri.B >= len(mesh.Vertices) ||
+			tri.C >= len(mesh.Vertices) {
+			continue
+		}
+
+		a := mesh.Vertices[tri.A]
+		b := mesh.Vertices[tri.B]
+		c := mesh.Vertices[tri.C]
+
+		ab := subtract(b, a)
+		ac := subtract(c, a)
+
+		crossProduct := cross(ab, ac)
+
+		triangleArea :=
+			0.5 * math.Sqrt(dot(crossProduct, crossProduct))
+
+		if isFiniteFloat(triangleArea) {
+			area += triangleArea
+		}
+	}
+
+	return area
 }
 
 /* =========================================================
