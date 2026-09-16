@@ -1787,8 +1787,10 @@ const (
 )
 
 func estimatePrintWeight(
-	solidWeight float64,
-	infill float64,
+    mesh Mesh,
+    volumeCm3 float64,
+    density float64,
+    infill float64,
 ) float64 {
 	if infill < 0 {
 		infill = 0
